@@ -6,7 +6,7 @@ build:
 	go build -o output/bin/${APP} cmd/main.go
 
 run:
-	. env.sh && ./output/bin/${APP}
+	. ./env.sh && ./output/bin/${APP}
 .PHONY: run
 
 fmt:
