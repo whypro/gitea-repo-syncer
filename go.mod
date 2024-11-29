@@ -4,7 +4,7 @@ go 1.17
 
 require (
 	code.gitea.io/sdk/gitea v0.15.1
-	github.com/google/go-github/v44 v44.1.0
+	github.com/google/go-github/v45 v45.2.0
 	github.com/sirupsen/logrus v1.8.1
 )
 

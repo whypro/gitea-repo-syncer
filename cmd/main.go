@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"code.gitea.io/sdk/gitea"
-	"github.com/google/go-github/v44/github"
+	"github.com/google/go-github/v45/github"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
@@ -93,14 +93,22 @@ func (s *GiteaRepoSyncer) SyncStarredRepos(syncFn SyncFn, ignoreOnError bool) er
 					return err
 				}
 			}
+			time.Sleep(5 * time.Second)
 		}
 		if len(repos) < perPage {
 			break
 		}
 		page += 1
+		time.Sleep(5 * time.Second)
 	}
 	return nil
 }
+
+//func (s *GiteaRepoSyncer) SyncRepo(cloneAddr string, syncFn SyncFn) error {
+//	ctx := context.Background()
+//	s.githubClient.
+//
+//}
 
 func (s *GiteaRepoSyncer) EnsureOwner(owner *github.User) error {
 	if owner.GetType() != "User" {
@@ -112,7 +120,7 @@ func (s *GiteaRepoSyncer) EnsureOwner(owner *github.User) error {
 		logrus.Infof("user %s is already exists in gitea", owner.GetLogin())
 		return nil
 	}
-	if err != nil && resp.StatusCode != http.StatusNotFound {
+	if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
 		logrus.Errorf("get user %s info error, %s", owner.GetLogin(), err)
 		return err
 	}
@@ -136,21 +144,29 @@ func (s *GiteaRepoSyncer) EnsureOwner(owner *github.User) error {
 		Visibility:         &visibility,
 	}
 	if createUserOpt.Email == "" {
-		createUserOpt.Email = fmt.Sprintf("%s@github.com", owner.GetLogin())
+		createUserOpt.Email = fmt.Sprintf("%s@github.com", user.GetLogin())
 	}
 	_, _, err = s.giteaClient.AdminCreateUser(createUserOpt)
 	if err != nil {
-		logrus.Errorf("create gitea user %s error, %v", owner.GetLogin(), err)
+		logrus.Errorf("create gitea user %s error, %v", user.GetLogin(), err)
 		return err
 	}
-	logrus.Infof("create gitea user %s success", owner.GetLogin())
+	logrus.Infof("create gitea user %s success", user.GetLogin())
 	editUserOpt := gitea.EditUserOption{
-		Website:  user.Blog,
-		Location: user.Location,
+		LoginName: user.GetLogin(),
 	}
-	_, err = s.giteaClient.AdminEditUser(owner.GetLogin(), editUserOpt)
+	blog := user.GetBlog()
+	logrus.Debugf("blog: %v", blog)
+	if blog != "" {
+		editUserOpt.Website = &blog
+	}
+	location := user.GetLocation()
+	if location != "" {
+		editUserOpt.Location = &location
+	}
+	_, err = s.giteaClient.AdminEditUser(user.GetLogin(), editUserOpt)
 	if err != nil {
-		logrus.Errorf("edit gitea user %s error, %v", owner.GetLogin(), err)
+		logrus.Errorf("edit gitea user %s error, %v", user.GetLogin(), err)
 		return err
 	}
 	return nil
@@ -166,7 +182,7 @@ func (s *GiteaRepoSyncer) EnsureOrg(owner *github.User) error {
 		logrus.Infof("org %s is already exists in gitea", owner.GetLogin())
 		return nil
 	}
-	if err != nil && resp.StatusCode != http.StatusNotFound {
+	if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
 		logrus.Errorf("get org %s info error, %s", owner.GetLogin(), err)
 		return err
 	}
@@ -196,12 +212,13 @@ func (s *GiteaRepoSyncer) EnsureOrg(owner *github.User) error {
 }
 
 func (s *GiteaRepoSyncer) MigrateRepo(repoName, ownerName, cloneAddr string) error {
-	_, resp, err := s.giteaClient.GetRepo(ownerName, repoName)
+	repo, resp, err := s.giteaClient.GetRepo(ownerName, repoName)
 	if err == nil {
+		logrus.Debugf("repo: %+v", repo)
 		logrus.Infof("repo %s is already exists", repoName)
 		return nil
 	}
-	if err != nil && resp.StatusCode != http.StatusNotFound {
+	if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
 		logrus.Errorf("get repo %s error, %s", repoName, err)
 		return err
 	}
@@ -264,6 +281,7 @@ func (s *GiteaRepoSyncer) SyncRepo(repo *github.Repository) error {
 
 // gitea-repo-syncer
 func main() {
+	//logrus.SetLevel(logrus.InfoLevel)
 	logrus.SetLevel(logrus.DebugLevel)
 	githubUser := os.Getenv("GITHUB_USER")
 	githubToken := os.Getenv("GITHUB_AUTH_TOKEN")

@@ -1,6 +1,6 @@
 # Gitea Repo Syncer
 
-Gitea Repo Syncer is a tool that mirror your all github starred repositories into a private gitea server. It also can sync repository owners by auto creating users and organizations.
+Gitea Repo Syncer is a tool that mirror your all github starred repositories into a private [gitea](https://gitea.io) server. It also can sync repository owners by auto creating users and organizations.
 
 ## Build
 
@@ -29,4 +29,3 @@ make run
 ## Screenshots
 
 ![](./docs/ss_01.png)
-
