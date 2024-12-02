@@ -3,23 +3,23 @@ APP=gitea-repo-syncer
 all: fmt vendor build
 
 build:
-	go build -o output/bin/${APP} cmd/main.go
+	go build -o output/bin/${APP} .
 
 run:
 	. ./env.sh && ./output/bin/${APP} > log
 .PHONY: run
 
 fmt:
-	go fmt ./cmd/... ./pkg/...
+	go fmt .
 .PHONY: fmt
 
 vendor:
 	go mod tidy
-	go mod vendor
+	go mod download
 .PHONY: vendor
 
 docker-fmt:
-	docker run -it -v ${PWD}:/go/src/github.com/whypro/${APP} -w /go/src/github.com/whypro/${APP} golang:1.18 go fmt ./cmd/... ./pkg/...
+	docker run -it -v ${PWD}:/go/src/github.com/whypro/${APP} -w /go/src/github.com/whypro/${APP} golang:1.22 go fmt .
 
 docker-build:
-	docker run -it -v ${PWD}:/go/src/github.com/whypro/${APP} -w /go/src/github.com/whypro/${APP} golang:1.18 go build -o output/bin/${APP} cmd/main.go
+	docker run -it -v ${PWD}:/go/src/github.com/whypro/${APP} -w /go/src/github.com/whypro/${APP} golang:1.22 go build -o output/bin/${APP} .
