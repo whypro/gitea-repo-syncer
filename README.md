@@ -8,6 +8,7 @@ Gitea Repo Syncer is a tool that mirror your all github starred repositories int
 - 👥 Auto-create users and organizations in Gitea
 - 🔁 Keep repositories synchronized with original GitHub sources
 - 🔐 Support for private Gitea instances
+- ⚡ Efficient mirroring process 
 
 ## Prerequisites
 
@@ -67,7 +68,6 @@ export GITHUB_AUTH_TOKEN="your-github-token"
 
 ### Others
 - [ ] Avatar support
-- [ ] ⚡ Efficient mirroring process 
 
 ## Contributing
 

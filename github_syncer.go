@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"code.gitea.io/sdk/gitea"
@@ -20,9 +21,10 @@ type GiteaRepoSyncer struct {
 	githubToken  string
 	githubClient *github.Client
 
-	ignoreOnError bool
-
-	userCache map[string]int64
+	userCache           map[string]int64
+	githubRepoCh        chan *github.Repository
+	githubListStartPage int
+	githubListPageSize  int
 }
 
 type GiteaUser struct {
@@ -46,6 +48,7 @@ type GiteaOrg struct {
 func NewGiteaRepoSyncer(
 	giteaServerURL, giteaUser, giteaToken string,
 	githubUser, githubToken string,
+	startPage, pageSize int,
 ) (*GiteaRepoSyncer, error) {
 	giteaClient, err := gitea.NewClient(giteaServerURL, gitea.SetToken(giteaToken))
 	if err != nil {
@@ -55,12 +58,15 @@ func NewGiteaRepoSyncer(
 	githubClient := github.NewClient(nil)
 
 	return &GiteaRepoSyncer{
-		giteaUser:    giteaUser,
-		giteaClient:  giteaClient,
-		githubUser:   githubUser,
-		githubToken:  githubToken,
-		githubClient: githubClient,
-		userCache:    make(map[string]int64),
+		giteaUser:           giteaUser,
+		giteaClient:         giteaClient,
+		githubUser:          githubUser,
+		githubToken:         githubToken,
+		githubClient:        githubClient,
+		userCache:           make(map[string]int64),
+		githubRepoCh:        make(chan *github.Repository, 5),
+		githubListStartPage: startPage,
+		githubListPageSize:  pageSize,
 	}, nil
 }
 
@@ -74,9 +80,9 @@ func ConvertGithubUserToGiteaUser(user *github.User) *GiteaUser {
 		Website:     user.GetBlog(),
 		Location:    user.GetLocation(),
 	}
-	if giteaUser.Email == "" {
+	if user.GetEmail() == "" {
 		email := fmt.Sprintf("%s@github.com", user.GetLogin())
-		logrus.Warnf("user %s email is empty, use %s", user.GetLogin(), email)
+		logrus.Warnf("user %s email is empty, set to %s", user.GetLogin(), email)
 		giteaUser.Email = email
 	}
 	return giteaUser
@@ -135,6 +141,11 @@ func ConvertGithubOrgToGiteaOrg(org *github.Organization) *GiteaOrg {
 		Description: org.GetDescription(),
 		Website:     org.GetBlog(),
 		Location:    org.GetLocation(),
+	}
+	if org.GetBlog() != "" && !strings.HasPrefix(org.GetBlog(), "http") {
+		website := fmt.Sprintf("http://%s", org.GetBlog())
+		logrus.Warnf("user %s website is invalid, set to %s", org.GetLogin(), website)
+		giteaOrg.Website = website
 	}
 	return giteaOrg
 }
@@ -298,7 +309,7 @@ func (s *GiteaRepoSyncer) createGiteaMirrorRepo(ownerName, repoName, cloneAddr s
 		Issues:         true,
 		PullRequests:   true,
 		Releases:       true,
-		MirrorInterval: "24h",
+		MirrorInterval: "168h", // 7d
 	}
 	logrus.Infof("migrate repo opt: %+v", opt)
 	_, _, err = s.giteaClient.MigrateRepo(opt)
@@ -310,50 +321,68 @@ func (s *GiteaRepoSyncer) createGiteaMirrorRepo(ownerName, repoName, cloneAddr s
 	return nil
 }
 
-func (s *GiteaRepoSyncer) ListGithubStarredRepos(username string) ([]*github.StarredRepository, error) {
+func (s *GiteaRepoSyncer) listGithubStarredRepos(stopCh <-chan struct{}) error {
 	ctx := context.Background()
-	page := 1
 	const pageSize int = 10
-	const pageRequestInterval = 5 * time.Second
-	starredRepositories := make([]*github.StarredRepository, 0)
-	for {
-		opts := &github.ActivityListStarredOptions{
-			ListOptions: github.ListOptions{
-				Page:    page,
-				PerPage: pageSize,
-			},
-		}
-		repos, _, err := s.githubClient.Activity.ListStarred(ctx, username, opts)
-		if err != nil {
-			logrus.Errorf("list starred repos for %s error, %v", username, err)
-			return nil, err
-		}
-		starredRepositories = append(starredRepositories, repos...)
-		if len(repos) < pageSize {
-			break
-		}
-		page += 1
-		time.Sleep(pageRequestInterval)
+	const pageRequestInterval = 10 * time.Second
+	opts := &github.ActivityListStarredOptions{
+		ListOptions: github.ListOptions{
+			Page:    s.githubListStartPage,
+			PerPage: pageSize,
+		},
 	}
-	return starredRepositories, nil
+	// starredRepositories := make([]*github.StarredRepository, 0)
+	for {
+		select {
+		case <-stopCh:
+			logrus.Infof("stop list")
+			return nil
+		default:
+			logrus.Debugf("list github starred repos, page %d", opts.Page)
+			repos, resp, err := s.githubClient.Activity.ListStarred(ctx, s.githubUser, opts)
+			if err != nil {
+				logrus.Errorf("list starred repos for %s error, %v", s.githubUser, err)
+				return err
+			}
+			// starredRepositories = append(starredRepositories, repos...)
+			for _, repo := range repos {
+				select {
+				case <-stopCh:
+					logrus.Infof("stop enqueue")
+					return nil
+				case s.githubRepoCh <- repo.GetRepository():
+					logrus.Infof("enqueue github repo %s/%s", repo.GetRepository().GetOwner().GetLogin(), repo.GetRepository().GetName())
+				}
+			}
+			if resp.NextPage == 0 {
+				return nil
+			}
+			opts.Page = resp.NextPage
+			time.Sleep(pageRequestInterval)
+		}
+	}
 }
 
-func (s *GiteaRepoSyncer) SyncGithubStarredRepos() error {
-	logrus.Infof("listing github starred repos for user: %s", s.githubUser)
-	repos, err := s.ListGithubStarredRepos(s.githubUser)
-	if err != nil {
-		logrus.Errorf("list github starred repos for %s error: %v", s.githubUser, err)
-		return err
-	}
-	for _, repo := range repos {
-		err := s.syncGithubRepo(repo.GetRepository())
-		if err != nil {
-			logrus.Errorf("sync github repo %s error: %v", repo.GetRepository().GetName(), err)
-			if s.ignoreOnError {
+func (s *GiteaRepoSyncer) process(stopCh <-chan struct{}) {
+	for {
+		select {
+		case repo := <-s.githubRepoCh:
+			err := s.syncGithubRepo(repo)
+			if err != nil {
+				logrus.Errorf("sync github repo %s error: %v", repo.GetName(), err)
 				continue
 			}
-			return err
+		case <-stopCh:
+			logrus.Infof("stop process")
+			return
 		}
 	}
+}
+
+func (s *GiteaRepoSyncer) Run(stopCh <-chan struct{}) error {
+	go s.process(stopCh)
+	go s.listGithubStarredRepos(stopCh)
+
+	<-stopCh
 	return nil
 }
